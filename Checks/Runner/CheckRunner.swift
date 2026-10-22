@@ -103,6 +103,7 @@ func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throw
         let attachment = StoredAttachment(path: imageURL.path, name: "截图.png")
         var document = AppDocument()
         document.inactiveNoteOpacity = 0.45
+        document.keepNotesExpanded = true
         document.notes = [StoredNote(id: id, title: "中文便签 🌏", model: "model-a", effort: "high", threadID: "thread-a",
                                      activeTurnID: "turn-a", draft: "未发送的草稿", attachments: [attachment], hasImages: true,
                                      compactX: -900, compactY: 600,
@@ -111,9 +112,13 @@ func check(_ condition: @autoclosure () throws -> Bool, _ message: String) throw
         try persistence.save(document)
         let reloaded = try persistence.load()
         try check(reloaded.inactiveNoteOpacity == 0.45, "Inactive note opacity did not round-trip")
+        try check(reloaded.keepNotesExpanded == true, "Keep Notes Expanded did not round-trip")
         var legacyDocument = try JSONSerialization.jsonObject(with: JSONEncoder().encode(reloaded)) as! [String: Any]
         legacyDocument.removeValue(forKey: "inactiveNoteOpacity")
+        legacyDocument.removeValue(forKey: "keepNotesExpanded")
         let restoredLegacyDocument = try JSONDecoder().decode(AppDocument.self, from: JSONSerialization.data(withJSONObject: legacyDocument))
+        try check(restoredLegacyDocument.keepNotesExpanded == nil,
+                  "Legacy documents should preserve the default automatic-collapse preference")
         try check(restoredLegacyDocument.inactiveNoteOpacity == nil &&
                   AppDocument.normalizedInactiveNoteOpacity(restoredLegacyDocument.inactiveNoteOpacity) == 0.6,
                   "Legacy documents should use the default inactive note opacity")

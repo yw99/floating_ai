@@ -285,6 +285,12 @@ final class SelectedTitlePopup: NSPopUpButton {
             Divider()
             claudeConnection
             Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Keep Notes Expanded", isOn: $store.keepNotesExpanded)
+                Text("Keep notes open when you click elsewhere. Click the title or press Esc to collapse.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Inactive Note Opacity").font(.callout)

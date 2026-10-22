@@ -86,6 +86,14 @@ import SwiftUI
             // @Published emits before the property's new value is stored.
             self?.updateOpacities(inactiveOpacity: AppDocument.normalizedInactiveNoteOpacity(opacity))
         }.store(in: &subscriptions)
+        store.$keepNotesExpanded.dropFirst().sink { [weak self] keepExpanded in
+            guard let self, keepExpanded else { return }
+            for entry in self.entries.values where !entry.temporaryDragExpansion {
+                entry.collapseWork?.cancel()
+                entry.collapseWork = nil
+                entry.automaticCollapseAfterDrag = false
+            }
+        }.store(in: &subscriptions)
         store.$requestedNoteID.compactMap { $0 }.sink { [weak self] id in
             Task { @MainActor in
                 guard let self, let note = self.store.notes.first(where: { $0.id == id }) else { return }
@@ -310,7 +318,7 @@ import SwiftUI
         finishTitleEditing(entry, force: true)
         entry.collapseWork?.cancel()
         if focus {
-            for other in entries.values where other !== entry { collapse(other) }
+            for other in entries.values where other !== entry { collapse(other, automatic: true) }
             selectNote(entry)
         }
         entry.panel.allowsKeyboardFocus = focus
@@ -326,10 +334,11 @@ import SwiftUI
         }
     }
 
-    private func collapse(_ entry: Entry, force: Bool = false) {
-        guard entry.note.isExpanded else { return }
+    private func collapse(_ entry: Entry, force: Bool = false, automatic: Bool = false) {
+        guard entry.note.isExpanded, !automatic || shouldAutomaticallyCollapse(entry) else { return }
         if entry.isDraggingWindow {
-            entry.collapseAfterDrag = true
+            if automatic { entry.automaticCollapseAfterDrag = true }
+            else { entry.collapseAfterDrag = true }
             entry.forceCollapseAfterDrag = entry.forceCollapseAfterDrag || force
             entry.headerCollapseWork?.cancel()
             return
@@ -419,9 +428,11 @@ import SwiftUI
             entry.isDraggingWindow = false
             entry.interactions.remove("windowDrag")
             saveFrame(entry, persist: false)
-            let shouldCollapse = entry.note.isHeaderOnly || entry.collapseAfterDrag
+            let shouldCollapse = entry.note.isHeaderOnly || entry.collapseAfterDrag ||
+                (entry.automaticCollapseAfterDrag && shouldAutomaticallyCollapse(entry))
             let force = entry.forceCollapseAfterDrag
             entry.collapseAfterDrag = false
+            entry.automaticCollapseAfterDrag = false
             entry.forceCollapseAfterDrag = false
             if shouldCollapse {
                 collapse(entry, force: force)
@@ -514,11 +525,18 @@ import SwiftUI
         updateOpacity(entry)
     }
 
+    private func shouldAutomaticallyCollapse(_ entry: Entry) -> Bool {
+        // A cancelled drop still restores a note that was only opened for its preview.
+        !store.keepNotesExpanded || entry.temporaryDragExpansion
+    }
+
     fileprivate func scheduleCollapse(_ entry: Entry, delay: Double = 0.18) {
         entry.collapseWork?.cancel()
+        entry.collapseWork = nil
+        guard shouldAutomaticallyCollapse(entry) else { return }
         let work = DispatchWorkItem { [weak self, weak entry] in
             guard let self, let entry, !entry.panel.isKeyWindow else { return }
-            self.collapse(entry)
+            self.collapse(entry, automatic: true)
         }
         entry.collapseWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -630,6 +648,7 @@ import SwiftUI
         var headerCollapseToken: UUID?
         var isDraggingWindow = false
         var collapseAfterDrag = false
+        var automaticCollapseAfterDrag = false
         var forceCollapseAfterDrag = false
         var needsScreenClamp = false
         var adjustingFrame = false

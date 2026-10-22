@@ -62,6 +62,9 @@ struct CodexCLILocator {
     @Published var defaultModelID = ""
     @Published var defaultProvider: ChatProvider = .codex
     @Published var defaultEffort = ""
+    @Published var keepNotesExpanded = false {
+        didSet { scheduleSave() }
+    }
     @Published var inactiveNoteOpacity = 0.6 {
         didSet {
             let normalized = AppDocument.normalizedInactiveNoteOpacity(inactiveNoteOpacity)
@@ -146,6 +149,7 @@ struct CodexCLILocator {
             defaultProvider = document.defaultProvider ?? .codex
             defaultEffort = document.defaultEffort
             inactiveNoteOpacity = AppDocument.normalizedInactiveNoteOpacity(document.inactiveNoteOpacity)
+            keepNotesExpanded = document.keepNotesExpanded ?? false
             notes = document.notes.map { stored in
                 let note = NoteState(id: stored.id, title: stored.title, model: stored.model, effort: stored.effort,
                                      provider: stored.provider ?? .codex)
@@ -1129,6 +1133,7 @@ struct CodexCLILocator {
         document.defaultProvider = defaultProvider
         document.defaultEffort = defaultEffort
         document.inactiveNoteOpacity = AppDocument.normalizedInactiveNoteOpacity(inactiveNoteOpacity)
+        document.keepNotesExpanded = keepNotesExpanded
         document.notes = notes.filter { $0.id != excludedID }.map { note in
             StoredNote(id: note.id, title: note.title, model: note.model, effort: note.effort,
                        threadID: note.threadID, activeTurnID: note.activeTurnID, draft: note.draft,

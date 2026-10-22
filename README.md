@@ -2,7 +2,7 @@
 
 Small, floating AI chat windows for your Mac. Keep conversations beside your work, ask questions, search the web, and discuss images or documents using Codex or Claude.
 
-**Version 0.3.2 · macOS 13 or later · Intel and Apple Silicon**
+**Version 0.3.3 · macOS 13 or later · Intel and Apple Silicon**
 
 ## 1. Install a chat provider
 
@@ -90,6 +90,8 @@ You can connect both providers. Choose **New Note…** from the menu bar, pick a
 Undo applies to the current draft; it does not unsend messages. Deleting a note permanently removes it and its local conversation history. Hiding a note keeps its contents.
 
 Notes save automatically. You can change the model and reasoning setting between messages, or stop a reply while it is generating.
+
+To keep notes open when you click elsewhere, enable **Keep Notes Expanded** in **Settings**. This applies to all notes and is remembered between launches. You can still click a note's title or press **Esc** to collapse it.
 
 Math formulas render automatically: use `$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for a separate equation. Rendering works offline, including in saved conversations. Use **Copy message** to copy the original LaTeX; code blocks stay as code. No TeX installation is needed. Unsupported formulas remain readable as source.
 

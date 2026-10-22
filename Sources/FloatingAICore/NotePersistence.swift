@@ -114,6 +114,8 @@ public struct AppDocument: Codable, Sendable {
     /// Unknown values must fail decoding rather than select a billing mode.
     public var authenticationMode: AuthenticationMode?
     public var inactiveNoteOpacity: Double?
+    /// Missing in older documents preserves automatic collapse on focus loss.
+    public var keepNotesExpanded: Bool?
     public var notes: [StoredNote] = []
     public init() {}
 

@@ -132,7 +132,12 @@ private struct UndoComposer: View {
             try await hidingAndDeletingHaveDifferentLifecycles()
             try await failedDeletionKeepsPanelAndHistoryReference()
             try await queuedCreationCannotResurrectDeletedPanel()
-            print("PASS: 16 native note-action UI checks")
+            try await keepExpandedPreferencePersistsAndDefaults()
+            try await settingsKeepExpandedToggleUpdatesPreference()
+            try await focusLossObeysKeepExpandedPreference()
+            try await keepExpandedPreservesOtherNotesAndCancelsQueuedCollapse()
+            try await keepExpandedAllowsExplicitCollapseAndHide()
+            print("PASS: 21 native note-action UI checks")
             exit(0)
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -333,6 +338,189 @@ private struct UndoComposer: View {
     }
 
     @MainActor private static func settle() async throws { try await Task.sleep(nanoseconds: 250_000_000) }
+
+    @MainActor private static func keepExpandedPreferencePersistsAndDefaults() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floating-ai-keep-expanded-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fresh = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(!fresh.keepNotesExpanded, "A new installation unexpectedly disables automatic collapse")
+        await fresh.shutdown()
+        let persistence = NotePersistence(directory: directory)
+        let legacy = Data(#"{"version":1,"cliPath":"","defaultModelID":"","defaultEffort":"","notes":[]}"#.utf8)
+        try legacy.write(to: persistence.documentURL, options: .atomic)
+        let store = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(!store.keepNotesExpanded, "A legacy document changed the default collapse behavior")
+        store.keepNotesExpanded = true
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let enabledDocument = try persistence.load()
+        try require(enabledDocument.keepNotesExpanded == true, "Enabling Keep Notes Expanded was not autosaved")
+        let restored = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(restored.keepNotesExpanded, "Restart lost Keep Notes Expanded")
+        await restored.shutdown()
+        store.keepNotesExpanded = false
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let disabledDocument = try persistence.load()
+        try require(disabledDocument.keepNotesExpanded == false, "Disabling Keep Notes Expanded was not autosaved")
+        await store.shutdown()
+    }
+
+    @MainActor private static func fixturePanel(for note: NoteState) throws -> NSWindow {
+        guard let panel = NSApplication.shared.windows.first(where: { $0.title == note.title }) else {
+            throw CheckFailure(message: "The Keep Notes Expanded fixture panel did not mount")
+        }
+        return panel
+    }
+
+    @MainActor private static func settingsKeepExpandedToggleUpdatesPreference() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floating-ai-settings-ui-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        let host = NSHostingView(rootView: SettingsView(store: store))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 500, height: 650),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        window.orderFrontRegardless()
+        try await settle()
+        host.layoutSubtreeIfNeeded()
+        func checkboxes(in view: NSView) -> [NSButton] {
+            if let button = view as? NSButton, let parent = button.superview,
+               String(describing: Swift.type(of: parent)).contains("Checkbox") { return [button] }
+            return view.subviews.flatMap { checkboxes(in: $0) }
+        }
+        let buttons = checkboxes(in: host)
+        // The Settings view has one native checkbox; SwiftUI draws its label.
+        try require(buttons.count == 1, "Settings did not expose its Keep Notes Expanded checkbox")
+        let toggle = buttons[0]
+        try require(toggle.state == .off && !store.keepNotesExpanded, "Settings showed the wrong initial preference")
+        toggle.scrollToVisible(toggle.bounds)
+        host.layoutSubtreeIfNeeded()
+        // SwiftUI's native checkbox updates its binding through mouse handling;
+        // NSButton.performClick can change only its cell state on macOS 14.
+        let point = toggle.convert(NSPoint(x: toggle.bounds.midX, y: toggle.bounds.midY), to: nil)
+        await click(point, in: window)
+        try await settle()
+        try require(store.keepNotesExpanded && toggle.state == .on, "The Settings checkbox did not enable Keep Notes Expanded")
+        await click(point, in: window)
+        try await settle()
+        try require(!store.keepNotesExpanded && toggle.state == .off, "The Settings checkbox did not disable Keep Notes Expanded")
+        await store.shutdown()
+    }
+
+    @MainActor private static func resignWithoutSchedulingCollapse(_ panel: NSWindow) {
+        // Isolate each notification/monitor from the independent resign-key path.
+        let delegate = panel.delegate
+        panel.delegate = nil
+        panel.resignKey()
+        panel.delegate = delegate
+    }
+
+    @MainActor private static func postOutsideClick(in window: NSWindow) {
+        for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = NSEvent.mouseEvent(with: kind, location: NSPoint(x: 10, y: 10),
+                                          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                          clickCount: 1, pressure: kind == .leftMouseDown ? 1 : 0)!
+            NSApplication.shared.postEvent(event, atStart: false)
+        }
+    }
+
+    @MainActor private static func focusLossObeysKeepExpandedPreference() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let note = store.createNote(title: "Blur fixture \(UUID())", model: "fictional-model", effort: "medium")
+        let outside = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 80, height: 60),
+                               styleMask: [.borderless], backing: .buffered, defer: false)
+        outside.isReleasedWhenClosed = false
+        outside.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 60))
+        defer { outside.close() }
+        for enabled in [false, true] {
+            store.keepNotesExpanded = enabled
+            for trigger in ["window resign", "outside click", "app deactivate"] {
+                manager.show(note: note)
+                try await settle()
+                let panel = try fixturePanel(for: note)
+                try require(note.isExpanded, "The blur fixture did not expand")
+                if trigger == "window resign" {
+                    panel.resignKey()
+                } else {
+                    resignWithoutSchedulingCollapse(panel)
+                    if trigger == "outside click" { postOutsideClick(in: outside) }
+                    else { NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApplication.shared) }
+                }
+                try await Task.sleep(nanoseconds: 350_000_000)
+                try require(note.isExpanded == enabled,
+                            "\(trigger) ignored Keep Notes Expanded = \(enabled)")
+            }
+        }
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func keepExpandedPreservesOtherNotesAndCancelsQueuedCollapse() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = store.createNote(title: "First open fixture \(UUID())", model: "fictional-model", effort: "medium")
+        let second = store.createNote(title: "Second open fixture \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: first)
+        try await settle()
+        manager.show(note: second)
+        try await settle()
+        try require(!first.isExpanded && second.isExpanded, "The default mode stopped collapsing the previous note")
+        manager.show(note: first)
+        try await settle()
+        let panel = try fixturePanel(for: first)
+        panel.resignKey() // Queues the existing 180 ms automatic collapse.
+        store.keepNotesExpanded = true
+        try await settle()
+        try require(first.isExpanded, "Enabling Keep Notes Expanded failed to cancel an already queued collapse")
+        manager.show(note: second)
+        try await settle()
+        try require(first.isExpanded && second.isExpanded, "Opening another note collapsed an expanded note with the option enabled")
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func keepExpandedAllowsExplicitCollapseAndHide() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.keepNotesExpanded = true
+        let note = store.createNote(title: "Explicit collapse fixture \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: note)
+        try await settle()
+        let panel = try fixturePanel(for: note)
+        func expandedTitle(in view: NSView) -> NoteTitleField? {
+            if let title = view as? NoteTitleField, title.onSingleClickPreservingHeader != nil { return title }
+            return view.subviews.compactMap { expandedTitle(in: $0) }.first
+        }
+        guard let title = expandedTitle(in: panel.contentView!) else {
+            throw CheckFailure(message: "The expanded title control is missing")
+        }
+        let point = title.convert(NSPoint(x: title.bounds.midX, y: title.bounds.midY), to: nil)
+        title.mouseDown(with: resizeEvent(.leftMouseDown, point: point, window: panel))
+        title.mouseUp(with: resizeEvent(.leftMouseUp, point: point, window: panel))
+        try await Task.sleep(nanoseconds: UInt64((NSEvent.doubleClickInterval + 0.3) * 1_000_000_000))
+        try require(!note.isExpanded && note.isVisible, "Keep Notes Expanded blocked an explicit title collapse")
+        manager.show(note: note)
+        try await settle()
+        panel.cancelOperation(nil)
+        try await settle()
+        try require(!note.isExpanded && note.isVisible, "Keep Notes Expanded blocked Escape")
+        manager.show(note: note)
+        try await settle()
+        manager.hide(note: note)
+        try require(!note.isExpanded && !note.isVisible && !panel.isVisible,
+                    "Keep Notes Expanded blocked Hide Note")
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
 
     private static func compactResizeGeometryPreservesAnchors() throws {
         let area = NSRect(x: 0, y: 0, width: 1000, height: 800)

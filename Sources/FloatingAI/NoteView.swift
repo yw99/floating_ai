@@ -209,7 +209,9 @@ import UniformTypeIdentifiers
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Make room for an idea.")
                                 .font(.title3.weight(.medium)).foregroundStyle(.primary)
-                            Text("Type a message, or add images and files.\nClick elsewhere to collapse this note.")
+                            Text(store.keepNotesExpanded
+                                 ? "Type a message, or add images and files.\nClick the title or press Esc to collapse this note."
+                                 : "Type a message, or add images and files.\nClick elsewhere to collapse this note.")
                                 .font(.callout).foregroundStyle(.secondary).lineSpacing(4)
                         }.padding(.top, 18).padding(.bottom, 12)
                     }
