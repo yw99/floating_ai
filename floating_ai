@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  -h|--help)
+    printf 'Usage: floating_ai\nOpens the Floating AI app beside this launcher.\n'
+    exit 0
+    ;;
+esac
+if [ "$#" -ne 0 ]; then
+  printf 'Usage: floating_ai\n' >&2
+  exit 2
+fi
+
+# An installed command is a symlink back to this file. Resolve each target
+# relative to its link, so the app can be opened from any working directory.
+launcher_path="$0"
+link_count=0
+while [ -L "$launcher_path" ]; do
+  link_count=$((link_count + 1))
+  if [ "$link_count" -gt 40 ]; then
+    printf 'floating_ai: too many launcher symlinks.\n' >&2
+    exit 1
+  fi
+  launcher_dir=$(CDPATH= cd -P "$(dirname "$launcher_path")" && pwd)
+  link_target=$(readlink "$launcher_path")
+  case "$link_target" in
+    /*) launcher_path="$link_target" ;;
+    *) launcher_path="$launcher_dir/$link_target" ;;
+  esac
+done
+launcher_dir=$(CDPATH= cd -P "$(dirname "$launcher_path")" && pwd)
+app_path="$launcher_dir/Floating AI.app"
+
+if [ ! -x "$app_path/Contents/MacOS/FloatingAI" ]; then
+  printf 'floating_ai: app not found at %s\nKeep floating_ai beside Floating AI.app.\n' "$app_path" >&2
+  exit 1
+fi
+
+exec /usr/bin/open "$app_path"
