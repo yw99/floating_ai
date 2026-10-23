@@ -37,9 +37,35 @@ Claude may update automatically. If Floating AI later reports an unsupported ver
 
 These installers do not require Node.js or Homebrew.
 
-## 2. Open Floating AI
+## 2. Build and open Floating AI
 
-Download the [universal ZIP](dist/Floating-AI-macOS-universal.zip) and unzip it, or use the files in this project's root folder. Choose either way to open the app:
+Build the app from source on your Mac. You need **Swift 5.10 or newer** and the macOS SDK, included with a compatible Apple Command Line Tools or Xcode installation.
+
+If you haven't installed Apple's developer tools, run:
+
+```sh
+xcode-select --install
+```
+
+Wait for installation to finish, then check your Swift version:
+
+```sh
+swift --version
+```
+
+If the tools are already installed, update them through **System Settings → General → Software Update**. See [Apple's installation guide](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools) if you need to reinstall them or choose a version compatible with your macOS.
+
+In Terminal, download the repository and build:
+
+```sh
+git clone https://github.com/yw99/floating_ai.git
+cd floating_ai
+./scripts/build-app.sh native
+```
+
+Already cloned the repository? Run the build command from its folder—the one containing `Package.swift`.
+
+The build creates **`Floating AI.app`** in that folder for your Mac's processor. Choose either way to open it:
 
 - **Double-click:** open `./Floating AI.app` in Finder.
 - **Terminal:** run `./floating_ai` from the same folder.
@@ -61,7 +87,7 @@ If Terminal says `command not found`, add `export PATH="$HOME/.local/bin:$PATH"`
 
 Look for the note icon in the **menu bar**. The app has no Dock icon.
 
-The app is not notarized by Apple. If macOS blocks it, and you trust your download, follow [Apple's instructions](https://support.apple.com/en-us/102445) to allow it in **System Settings → Privacy & Security → Open Anyway**.
+The app is not notarized by Apple. If macOS blocks it, and you trust the app, follow [Apple's instructions](https://support.apple.com/en-us/102445) to allow it in **System Settings → Privacy & Security → Open Anyway**.
 
 ## 3. Connect and start chatting
 
@@ -116,6 +142,6 @@ Notes and attachment copies are stored on your Mac. Messages and attachment cont
 - **Message was not sent:** your draft is kept. Resolve the displayed storage error, then try again.
 - **Installed a newer Floating AI:** quit the running app and reopen the new version.
 
-For developers: build requirements and test results are in the [validation notes](docs/VALIDATION.md).
+For developers: test commands, results, and validated build environments are in the [validation notes](docs/VALIDATION.md).
 
 Floating AI is an independent project and is not affiliated with OpenAI or Anthropic.
