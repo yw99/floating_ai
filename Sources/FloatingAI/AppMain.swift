@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import FloatingAICore
 import SwiftUI
 
 @main @MainActor enum FloatingAIApplication {
@@ -20,6 +21,8 @@ import SwiftUI
     private var settingsWindow: NSWindow?
     private var manageNotesWindow: NSWindow?
     private var isQuitting = false
+    private var shortcutController: ShortcutConfigurationController?
+    private var shortcutSubscriptions = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--preview"), CommandLine.arguments.indices.contains(index + 1) {
@@ -36,6 +39,7 @@ import SwiftUI
         menu.delegate = self
         statusItem.menu = menu
         rebuildStatusMenu(menu)
+        installKeyboardShortcuts()
         windows.restore()
         store.connectAll()
         if store.notes.isEmpty { showSettings(nil) }
@@ -52,6 +56,7 @@ import SwiftUI
         menu.addItem(appItem)
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(item("Open Recent Note", action: #selector(openRecentNote(_:))))
         fileMenu.addItem(item("New Note…", action: #selector(newNote(_:)), key: "n"))
         fileMenu.addItem(item("Manage Notes…", action: #selector(manageNotes(_:))))
         fileItem.submenu = fileMenu
@@ -75,6 +80,7 @@ import SwiftUI
 
     private func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
+        menu.addItem(item("Open Recent Note", action: #selector(openRecentNote(_:))))
         menu.addItem(item("New Note…", action: #selector(newNote(_:)), key: "n"))
         menu.addItem(item("Manage Notes…", action: #selector(manageNotes(_:))))
         if !store.notes.isEmpty {
@@ -111,6 +117,58 @@ import SwiftUI
         let window = makeDialog(title: "New Note", size: NSSize(width: 460, height: 410), root: view)
         newNoteWindow = window
         activate(window)
+    }
+
+    private func installKeyboardShortcuts() {
+        let global = GlobalKeyboardShortcut { [weak self] in self?.toggleRecentNote() }
+        shortcutController = ShortcutConfigurationController(settings: store.keyboardShortcuts, global: global)
+        store.configureKeyboardShortcuts = { [weak self] settings in
+            guard let self, !self.isQuitting else { return }
+            try ShortcutSettingsValidation.validate(settings, menu: NSApp.mainMenu)
+            try self.shortcutController?.update(settings)
+            self.syncShortcutStatus()
+        }
+        store.disableGlobalShortcut = { [weak self] in
+            self?.shortcutController?.disable(restoring: self?.store.keyboardShortcuts)
+            self?.syncShortcutStatus()
+        }
+        store.retryGlobalShortcut = { [weak self] in
+            guard let self, !self.isQuitting else { return }
+            defer { self.syncShortcutStatus() }
+            try ShortcutSettingsValidation.validate(self.store.keyboardShortcuts, menu: NSApp.mainMenu)
+            try self.shortcutController?.retryOpenShortcut()
+        }
+        do { try ShortcutSettingsValidation.validate(store.keyboardShortcuts, menu: NSApp.mainMenu) }
+        catch {
+            shortcutController?.disable()
+            store.shortcutError = error.localizedDescription
+        }
+        syncShortcutStatus()
+        store.$isRecordingShortcut.removeDuplicates().dropFirst().sink { [weak self] recording in
+            guard let self, !self.isQuitting else { return }
+            if recording { self.shortcutController?.beginRecording() }
+            else { self.shortcutController?.endRecording() }
+            self.syncShortcutStatus()
+        }.store(in: &shortcutSubscriptions)
+    }
+
+    private func syncShortcutStatus() {
+        store.openNoteShortcutActive = shortcutController?.isOpenActive == true
+        store.openNoteShortcutError = shortcutController?.error
+    }
+
+    @objc private func openRecentNote(_ sender: Any?) {
+        guard !isQuitting, !store.isRecordingShortcut else { return }
+        if let modal = NSApp.modalWindow { activate(modal); return }
+        if !windows.showMostRecentNote() { newNote(sender) }
+    }
+
+    /// The global shortcut collapses a focused, expanded note; otherwise it
+    /// jumps back to the most recent note. Menu items always open.
+    private func toggleRecentNote() {
+        guard !isQuitting, !store.isRecordingShortcut else { return }
+        if NSApp.modalWindow == nil, windows.collapseFocusedNote() { return }
+        openRecentNote(nil)
     }
 
     @objc private func showSettings(_ sender: Any?) {
@@ -172,6 +230,8 @@ import SwiftUI
         guard store != nil else { return .terminateNow }
         guard !isQuitting else { return .terminateLater }
         isQuitting = true
+        shortcutController?.disable()
+        shortcutSubscriptions.removeAll()
         windows?.finishTitleEditingAll()
         store.persist()
         Task { @MainActor in

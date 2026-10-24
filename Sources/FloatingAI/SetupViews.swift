@@ -291,6 +291,8 @@ final class SelectedTitlePopup: NSPopUpButton {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            ShortcutSettingsView(store: store)
+            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Inactive Note Opacity").font(.callout)

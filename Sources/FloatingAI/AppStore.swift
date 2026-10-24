@@ -65,6 +65,20 @@ struct CodexCLILocator {
     @Published var keepNotesExpanded = false {
         didSet { scheduleSave() }
     }
+    @Published var keyboardShortcuts = KeyboardShortcutSettings() {
+        didSet { scheduleSave() }
+    }
+    @Published var recentNoteIDs: [UUID] = [] {
+        didSet { scheduleSave() }
+    }
+    @Published var shortcutError: String?
+    @Published var openNoteShortcutError: String?
+    @Published var openNoteShortcutActive = false
+    @Published var isRecordingShortcut = false
+    // The application installs native registration; offline stores never register keys.
+    var configureKeyboardShortcuts: ((KeyboardShortcutSettings) throws -> Void)?
+    var disableGlobalShortcut: (() -> Void)?
+    var retryGlobalShortcut: (() throws -> Void)?
     @Published var inactiveNoteOpacity = 0.6 {
         didSet {
             let normalized = AppDocument.normalizedInactiveNoteOpacity(inactiveNoteOpacity)
@@ -150,6 +164,12 @@ struct CodexCLILocator {
             defaultEffort = document.defaultEffort
             inactiveNoteOpacity = AppDocument.normalizedInactiveNoteOpacity(document.inactiveNoteOpacity)
             keepNotesExpanded = document.keepNotesExpanded ?? false
+            keyboardShortcuts = document.keyboardShortcuts ?? KeyboardShortcutSettings()
+            let savedNoteIDs = Set(document.notes.map(\.id))
+            var seenRecentIDs = Set<UUID>()
+            recentNoteIDs = (document.recentNoteIDs ?? []).filter {
+                savedNoteIDs.contains($0) && seenRecentIDs.insert($0).inserted
+            }
             notes = document.notes.map { stored in
                 let note = NoteState(id: stored.id, title: stored.title, model: stored.model, effort: stored.effort,
                                      provider: stored.provider ?? .codex)
@@ -1123,6 +1143,37 @@ struct CodexCLILocator {
         catch { self.error = "Could not save notes: \(error.localizedDescription)"; return false }
     }
 
+    func recordNoteUse(_ id: UUID) {
+        guard notes.contains(where: { $0.id == id }), recentNoteIDs.first != id else { return }
+        let existingIDs = Set(notes.map(\.id))
+        recentNoteIDs = [id] + recentNoteIDs.filter { $0 != id && existingIDs.contains($0) }
+    }
+
+    @discardableResult func updateKeyboardShortcuts(_ settings: KeyboardShortcutSettings) -> Bool {
+        let previous = keyboardShortcuts
+        do {
+            try configureKeyboardShortcuts?(settings)
+            keyboardShortcuts = settings
+            guard persist() else {
+                do {
+                    try configureKeyboardShortcuts?(previous)
+                    shortcutError = "Could not save shortcuts. Your previous shortcuts have been kept."
+                } catch {
+                    keyboardShortcuts = previous
+                    disableGlobalShortcut?()
+                    shortcutError = "Could not save shortcuts or restore the previous global shortcut. Open Recent Note is inactive; use Retry in Keyboard Shortcuts when storage is available."
+                }
+                keyboardShortcuts = previous
+                return false
+            }
+            shortcutError = nil
+            return true
+        } catch {
+            shortcutError = error.localizedDescription
+            return false
+        }
+    }
+
     private func documentSnapshot(excluding excludedID: UUID? = nil) -> AppDocument {
         var document = AppDocument()
         document.authenticationMode = authenticationMode
@@ -1134,6 +1185,9 @@ struct CodexCLILocator {
         document.defaultEffort = defaultEffort
         document.inactiveNoteOpacity = AppDocument.normalizedInactiveNoteOpacity(inactiveNoteOpacity)
         document.keepNotesExpanded = keepNotesExpanded
+        document.keyboardShortcuts = keyboardShortcuts
+        let existingIDs = Set(notes.filter { $0.id != excludedID }.map(\.id))
+        document.recentNoteIDs = recentNoteIDs.filter { existingIDs.contains($0) }
         document.notes = notes.filter { $0.id != excludedID }.map { note in
             StoredNote(id: note.id, title: note.title, model: note.model, effort: note.effort,
                        threadID: note.threadID, activeTurnID: note.activeTurnID, draft: note.draft,

@@ -31,6 +31,8 @@ typealias ChatMessage = TranscriptMessage
     @Published var needsReconciliation = false
     @Published var error: String?
     @Published var hasUnreadReply = false
+    /// Ephemeral feedback for note shortcuts; never part of saved conversations.
+    @Published var shortcutNotice: String?
     @Published var focusRequest = UUID()
     var threadID: String?
     var activeTurnID: String?

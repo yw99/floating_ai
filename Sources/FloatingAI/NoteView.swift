@@ -51,6 +51,18 @@ import UniformTypeIdentifiers
             CompactResizeView(active: note.isVisible && !note.isExpanded,
                               onBegin: actions.beginCompactResize, onUpdate: actions.updateCompactResize, onEnd: actions.endCompactResize)
         }
+        .overlay(alignment: .top) {
+            if let notice = note.shortcutNotice {
+                Text(notice)
+                    .font(.caption.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal, 8)
+                    .padding(.top, note.isExpanded && !note.isHeaderOnly ? 52 : 4)
+                    .allowsHitTesting(false)
+            }
+        }
         .onChange(of: showsFiles) { actions.interaction("noteFiles", $0) }
     }
 

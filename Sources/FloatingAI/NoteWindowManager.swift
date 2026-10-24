@@ -108,6 +108,36 @@ import SwiftUI
 
     func show(note: NoteState) { present(note: note, expanded: true) }
 
+    /// Reopen the most recently used note even when it has been hidden. Passive
+    /// restore/show-all operations do not change the order of recently used notes.
+    @discardableResult func showMostRecentNote() -> Bool {
+        if let modal = NSApp.modalWindow ?? entries.values.compactMap({ $0.panel.attachedSheet }).first {
+            modal.makeKeyAndOrderFront(nil)
+            return true
+        }
+        let note = store.recentNoteIDs.lazy.compactMap { id in self.store.notes.first { $0.id == id } }.first ?? store.notes.first
+        guard let note else { return false }
+        if let entry = entries[note.id], hasMarkedText(entry) {
+            // Recalling a note must not commit or replace an in-progress IME draft.
+            note.isVisible = true
+            entry.collapseWork?.cancel()
+            selectNote(entry)
+            entry.panel.makeKeyAndOrderFront(nil)
+            return true
+        }
+        show(note: note)
+        return true
+    }
+
+    /// Collapse the note that has keyboard focus, as Esc does. Returns false when
+    /// no expanded note is focused, so the global shortcut reopens the recent note.
+    func collapseFocusedNote() -> Bool {
+        guard let entry = entries.values.first(where: { $0.panel.isKeyWindow && $0.note.id == selectedNoteID }),
+              entry.note.isVisible, entry.note.isExpanded, !entry.note.isHeaderOnly else { return false }
+        collapse(entry)
+        return true
+    }
+
     func hide(note: NoteState) {
         guard let entry = entries[note.id] else { return }
         finishCompactResize(entry)
@@ -115,6 +145,7 @@ import SwiftUI
         saveFrame(entry)
         collapse(entry, force: true)
         entry.interactions.removeAll()
+        clearShortcutNotice(entry)
         if selectedNoteID == note.id { selectNote(nil) }
         note.isVisible = false
         entry.panel.orderOut(nil)
@@ -206,6 +237,7 @@ import SwiftUI
         guard let entry = entries.removeValue(forKey: id) else { return }
         entry.collapseWork?.cancel()
         entry.collapseWork = nil
+        clearShortcutNotice(entry)
         cancelHeaderCollapse(entry)
         entry.subscriptions.removeAll()
         entry.interactions.removeAll()
@@ -214,6 +246,7 @@ import SwiftUI
         entry.manager = nil
         entry.panel.onEscape = nil
         entry.panel.onWindowDrag = nil
+        entry.panel.onShortcut = nil
         entry.panel.makeFirstResponder(nil)
         entry.note.isVisible = false
         entry.panel.contentView = nil
@@ -257,6 +290,10 @@ import SwiftUI
         panel.onWindowDrag = { [weak self, weak entry] active in
             guard let self, let entry else { return }
             self.windowDrag(entry, active: active)
+        }
+        panel.onShortcut = { [weak self, weak entry] event in
+            guard let self, let entry else { return false }
+            return self.handleShortcut(event, in: entry)
         }
         let actions = NoteWindowActions(
             expand: { [weak self, weak entry] in if let entry { self?.expand(entry, focus: true) } },
@@ -484,7 +521,44 @@ import SwiftUI
     private func selectNote(_ entry: Entry?) {
         if let entry, entries[entry.note.id] !== entry { return }
         selectedNoteID = entry?.note.id
+        if let entry { store.recordNoteUse(entry.note.id) }
         updateOpacities()
+    }
+
+    private func handleShortcut(_ event: NSEvent, in entry: Entry) -> Bool {
+        guard event.type == .keyDown, entries[entry.note.id] === entry,
+              entry.panel.isKeyWindow, entry.panel.isVisible, entry.note.isVisible,
+              !store.isRecordingShortcut, NSApp.modalWindow == nil, entry.panel.attachedSheet == nil,
+              !hasMarkedText(entry) else { return false }
+        let shortcuts = store.keyboardShortcuts
+        let action: (Entry) -> Void
+        if shortcuts.toggleKeepOpen?.matches(event) == true { action = toggleKeepExpanded }
+        else if shortcuts.hideNote?.matches(event) == true { action = { [weak self] in self?.hide(note: $0.note) } }
+        else if shortcuts.deleteNote?.matches(event) == true { action = requestDelete }
+        else { return false }
+        // Holding a shortcut should not repeat its action, or send its repeated
+        // keys into the text editor after the first successful press.
+        guard !event.isARepeat else { return true }
+        action(entry)
+        return true
+    }
+
+    private func toggleKeepExpanded(_ entry: Entry) {
+        store.keepNotesExpanded.toggle()
+        let notice = "Keep Notes Expanded: \(store.keepNotesExpanded ? "On" : "Off")"
+        clearShortcutNotice(entry)
+        entry.note.shortcutNotice = notice
+        NSAccessibility.post(element: entry.panel, notification: .announcementRequested,
+                             userInfo: [.announcement: notice, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        let work = DispatchWorkItem { [weak entry] in entry?.note.shortcutNotice = nil }
+        entry.shortcutNoticeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    private func clearShortcutNotice(_ entry: Entry) {
+        entry.shortcutNoticeWork?.cancel()
+        entry.shortcutNoticeWork = nil
+        entry.note.shortcutNotice = nil
     }
 
     private func updateOpacities(inactiveOpacity: Double? = nil) {
@@ -644,6 +718,7 @@ import SwiftUI
         var subscriptions = Set<AnyCancellable>()
         var collapseWork: DispatchWorkItem?
         var headerCollapseWork: DispatchWorkItem?
+        var shortcutNoticeWork: DispatchWorkItem?
         var headerCollapseDeadline: DispatchTime?
         var headerCollapseToken: UUID?
         var isDraggingWindow = false
@@ -685,8 +760,17 @@ import SwiftUI
     var allowsKeyboardFocus = false
     var onEscape: (() -> Void)?
     var onWindowDrag: ((Bool) -> Void)?
+    var onShortcut: ((NSEvent) -> Bool)?
     override var canBecomeKey: Bool { allowsKeyboardFocus }
     override var canBecomeMain: Bool { false }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if onShortcut?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, onShortcut?(event) == true { return }
+        super.sendEvent(event)
+    }
     override func performDrag(with event: NSEvent) {
         onWindowDrag?(true)
         defer { onWindowDrag?(false) }

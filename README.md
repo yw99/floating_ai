@@ -2,7 +2,7 @@
 
 Small, floating AI chat windows for your Mac. Keep conversations beside your work, ask questions, search the web, and discuss images or documents using Codex or Claude.
 
-**Version 0.3.3 · macOS 13 or later · Intel and Apple Silicon**
+**Version 0.3.4 · macOS 13 or later · Intel and Apple Silicon**
 
 ## 1. Install a chat provider
 
@@ -105,6 +105,11 @@ You can connect both providers. Choose **New Note…** from the menu bar, pick a
 | Send a message | **Enter** |
 | Add a new line | **Shift+Enter** |
 | Undo / redo draft edits | **⌘Z** / **⇧⌘Z** |
+| Open the most recently used note from any app | **⌘⌥O** (Floating AI must be running) |
+| Collapse the note you are typing in | **⌘⌥O** again, or **Esc** |
+| Toggle Keep Notes Expanded while a note has keyboard focus | **⌘⌥K** |
+| Hide the note you are typing in | **⌘⌥M** |
+| Delete the note you are typing in | **⌘⌥Delete** and confirm |
 | Expand or collapse a note | Click its title; **Esc** also collapses it |
 | Rename a note | Double-click its title |
 | Move a note | Drag its title bar |
@@ -118,6 +123,8 @@ Undo applies to the current draft; it does not unsend messages. Deleting a note 
 Notes save automatically. You can change the model and reasoning setting between messages, or stop a reply while it is generating.
 
 To keep notes open when you click elsewhere, enable **Keep Notes Expanded** in **Settings**. This applies to all notes and is remembered between launches. You can still click a note's title or press **Esc** to collapse it.
+
+Change or disable any shortcut in **Settings → Keyboard Shortcuts**. **⌘⌥O** also reopens hidden notes; if you have no notes, it opens **New Note**. If you are typing in an expanded note, it collapses that note instead. Other apps may use the same keys, so choose another combination if needed.
 
 Math formulas render automatically: use `$...$` or `\(...\)` inline, and `$$...$$` or `\[...\]` for a separate equation. Rendering works offline, including in saved conversations. Use **Copy message** to copy the original LaTeX; code blocks stay as code. No TeX installation is needed. Unsupported formulas remain readable as source.
 

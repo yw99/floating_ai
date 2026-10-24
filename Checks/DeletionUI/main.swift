@@ -115,6 +115,11 @@ private struct UndoComposer: View {
 
     @MainActor private static func runChecks() async {
         do {
+            if ProcessInfo.processInfo.environment["FLOATING_AI_SHORTCUTS_ONLY"] == "1" {
+                try await shortcutRecorderCapturesAndCancels()
+                print("PASS: native shortcut recorder and settings preview")
+                exit(0)
+            }
             try titleMenuDefersDeletionUntilSelection()
             try titleMenuCancelAndDisabledKeepNote()
             try compactResizeGeometryPreservesAnchors()
@@ -137,7 +142,16 @@ private struct UndoComposer: View {
             try await focusLossObeysKeepExpandedPreference()
             try await keepExpandedPreservesOtherNotesAndCancelsQueuedCollapse()
             try await keepExpandedAllowsExplicitCollapseAndHide()
-            print("PASS: 21 native note-action UI checks")
+            try await recentNoteShortcutRecallsHiddenAndFallsBack()
+            try await recentNoteTrackingIgnoresPassivePresentation()
+            try await keepExpandedShortcutRespectsFocusAndConfiguration()
+            try await hideAndDeleteShortcutsActOnFocusedNote()
+            try await recentNoteShortcutCollapsesOnlyFocusedNote()
+            try await noteShortcutsPreserveCompositionAndSheets()
+            try await shortcutRecorderCapturesAndCancels()
+            try await shortcutSettingsRejectConflictsAndPersist()
+            try await shortcutSaveFailureRollsBackOrDisablesRegistration()
+            print("PASS: 30 native note-action UI checks")
             exit(0)
         } catch {
             fputs("FAIL: \(error.localizedDescription)\n", stderr)
@@ -522,6 +536,423 @@ private struct UndoComposer: View {
         withExtendedLifetime(manager) {}
     }
 
+    @MainActor private static func shortcutEvent(in window: NSWindow, keyCode: UInt16 = 40,
+                                                flags: NSEvent.ModifierFlags = [.command, .option],
+                                                repeatKey: Bool = false, type: NSEvent.EventType = .keyDown) -> NSEvent {
+        NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                         timestamp: ProcessInfo.processInfo.systemUptime,
+                         windowNumber: window.windowNumber, context: nil,
+                         characters: keyCode == 40 ? "k" : "j", charactersIgnoringModifiers: keyCode == 40 ? "k" : "j",
+                         isARepeat: repeatKey, keyCode: keyCode)!
+    }
+
+    @MainActor private static func recentNoteShortcutRecallsHiddenAndFallsBack() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try require(!manager.showMostRecentNote(), "An empty store did not request the new-note flow")
+        let first = store.createNote(title: "Recent first \(UUID())", model: "fictional-model", effort: "medium")
+        let second = store.createNote(title: "Recent second \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: first)
+        try await settle()
+        manager.show(note: second)
+        try await settle()
+        manager.show(note: first)
+        try await settle()
+        let firstPanel = try fixturePanel(for: first)
+        try require(store.recentNoteIDs.prefix(2) == [first.id, second.id], "Explicit use did not maintain most-recent order")
+        manager.hide(note: first)
+        try require(manager.showMostRecentNote(), "The most recently used hidden note was not recalled")
+        try await settle()
+        try require(first.isExpanded && first.isVisible && firstPanel.isKeyWindow,
+                    "Recall did not expand and focus the hidden note")
+        let focusBefore = first.focusRequest
+        try require(manager.showMostRecentNote(), "An already open recent note was not handled")
+        try await settle()
+        try require(first.focusRequest != focusBefore && NSApp.windows.filter { $0.title == first.title }.count == 1,
+                    "Recall duplicated the panel or did not refocus its composer")
+        await store.deleteNote(first)
+        try await settle()
+        try require(manager.showMostRecentNote(), "Deleting the most recent note lost the previous-note fallback")
+        try await settle()
+        try require(second.isExpanded && second.isVisible, "Recall did not fall back to the remaining note")
+        second.deletionPending = true
+        try require(manager.showMostRecentNote(), "An incomplete deletion incorrectly requested another new note")
+        store.notes.removeAll()
+        try await settle()
+        try require(!manager.showMostRecentNote(), "Stale recent IDs reopened a deleted note")
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func recentNoteTrackingIgnoresPassivePresentation() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = store.createNote(title: "Passive first \(UUID())", model: "fictional-model", effort: "medium")
+        let second = store.createNote(title: "Passive second \(UUID())", model: "fictional-model", effort: "medium")
+        store.recentNoteIDs = []
+        manager.restore()
+        try await settle()
+        manager.showAll()
+        first.hasUnreadReply = true
+        try await settle()
+        try require(store.recentNoteIDs.isEmpty, "Restore, Show All, or background updates changed recent-note ordering")
+        manager.show(note: second)
+        try await settle()
+        let expected = store.recentNoteIDs
+        manager.hideAll()
+        manager.showAll()
+        try await settle()
+        try require(store.recentNoteIDs == expected, "Show All selected notes in presentation order")
+        try require(store.persist(), "The recent-note fixture could not save")
+        let restored = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(restored.recentNoteIDs.first == second.id, "The last actively used note was forgotten after restart")
+        await restored.shutdown()
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func keepExpandedShortcutRespectsFocusAndConfiguration() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let note = store.createNote(title: "Local shortcut \(UUID())", model: "fictional-model", effort: "medium")
+        note.draft = "Do not change this draft"
+        manager.show(note: note)
+        try await settle()
+        let panel = try fixturePanel(for: note)
+        try require(panel.isKeyWindow, "The local shortcut fixture did not acquire keyboard focus")
+        let key = shortcutEvent(in: panel)
+        try require(panel.performKeyEquivalent(with: key) && store.keepNotesExpanded,
+                    "Cmd-Option-K did not toggle the shared Keep Notes Expanded setting")
+        try require(note.shortcutNotice == "Keep Notes Expanded: On", "The local toggle did not report its new state")
+        try require(panel.performKeyEquivalent(with: shortcutEvent(in: panel, repeatKey: true)) && store.keepNotesExpanded,
+                    "Holding the shortcut repeatedly toggled the setting")
+        panel.sendEvent(key)
+        try require(!store.keepNotesExpanded && note.shortcutNotice == "Keep Notes Expanded: Off",
+                    "A note-panel key event did not toggle the same setting")
+        store.isRecordingShortcut = true
+        _ = panel.performKeyEquivalent(with: key)
+        try require(!store.keepNotesExpanded, "The note shortcut fired during shortcut recording")
+        store.isRecordingShortcut = false
+        store.keyboardShortcuts.toggleKeepOpen = nil
+        _ = panel.performKeyEquivalent(with: key)
+        try require(!store.keepNotesExpanded, "Disabling the local shortcut left it active")
+        store.keyboardShortcuts.toggleKeepOpen = FloatingAICore.KeyboardShortcut(keyCode: 38, modifiers: UInt32(NSEvent.ModifierFlags([.command, .shift]).rawValue))
+        _ = panel.performKeyEquivalent(with: key)
+        try require(!store.keepNotesExpanded, "Changing the local shortcut retained the old combination")
+        try require(panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 38, flags: [.command, .shift])) && store.keepNotesExpanded,
+                    "The customized local shortcut did not take effect")
+        panel.resignKey()
+        _ = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 38, flags: [.command, .shift]))
+        try require(store.keepNotesExpanded, "An unfocused note handled the local shortcut")
+        try require(note.draft == "Do not change this draft", "A shortcut modified the message draft")
+        try await Task.sleep(nanoseconds: 2_600_000_000)
+        try require(note.shortcutNotice == nil, "Shortcut feedback did not dismiss itself")
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func hideAndDeleteShortcutsActOnFocusedNote() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let note = store.createNote(title: "Hide delete shortcut \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: note)
+        try await settle()
+        let panel = try fixturePanel(for: note)
+        try require(panel.isKeyWindow, "The hide/delete shortcut fixture did not acquire keyboard focus")
+        try require(panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 46, repeatKey: true)) && note.isVisible,
+                    "A held Cmd-Option-M hid the note from a repeated key")
+        try require(panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 46)) && !note.isVisible && !panel.isVisible,
+                    "Cmd-Option-M did not hide the focused note")
+        try require(store.notes.contains(where: { $0.id == note.id }), "Hiding by shortcut removed the note")
+        manager.show(note: note)
+        try await settle()
+        panel.resignKey()
+        _ = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 46))
+        try require(note.isVisible, "An unfocused note handled the hide shortcut")
+        store.keyboardShortcuts.hideNote = nil
+        manager.show(note: note)
+        try await settle()
+        try require(!panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 46)) && note.isVisible,
+                    "A disabled hide shortcut still hid the note")
+
+        // The real confirmation runs; a stray or repeated key must not open it.
+        var handled = false
+        let repeated = await chooseConfirmation("Cancel", store: store, note: note) {
+            handled = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 51, repeatKey: true))
+        }
+        try require(handled && !repeated.foundDialog, "A held Cmd-Option-Delete opened the deletion confirmation")
+        let cancel = await chooseConfirmation("Cancel", store: store, note: note) {
+            handled = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 51))
+        }
+        try await settle()
+        try require(handled && cancel.foundDialog && store.notes.contains(where: { $0.id == note.id }) && !note.deletionPending,
+                    "Cmd-Option-Delete skipped the confirmation, or Cancel deleted the note")
+        store.keyboardShortcuts.deleteNote = nil
+        manager.show(note: note)
+        try await settle()
+        let disabled = await chooseConfirmation("Cancel", store: store, note: note) {
+            handled = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 51))
+        }
+        try require(!handled && !disabled.foundDialog, "A disabled delete shortcut still asked to delete the note")
+        store.keyboardShortcuts.deleteNote = .deleteNote
+        manager.show(note: note)
+        try await settle()
+        try require(panel.isKeyWindow, "The note did not regain focus after cancelling deletion")
+        let delete = await chooseConfirmation("Delete Note", store: store, note: note) {
+            handled = panel.performKeyEquivalent(with: shortcutEvent(in: panel, keyCode: 51))
+        }
+        try await settle()
+        try require(handled && delete.foundDialog && !store.notes.contains(where: { $0.id == note.id }),
+                    "Confirming Cmd-Option-Delete did not delete the focused note")
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func recentNoteShortcutCollapsesOnlyFocusedNote() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try require(!manager.collapseFocusedNote(), "Collapse reported success without any note")
+        let note = store.createNote(title: "Collapse shortcut \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: note)
+        try await settle()
+        let panel = try fixturePanel(for: note)
+        try require(panel.isKeyWindow && note.isExpanded, "The collapse fixture did not focus an expanded note")
+        try require(manager.collapseFocusedNote() && !note.isExpanded && note.isVisible,
+                    "The global shortcut did not collapse the focused, expanded note")
+        try await settle()
+        try require(!manager.collapseFocusedNote(), "A collapsed note was collapsed again instead of reopened")
+
+        // Kept expanded but unfocused: the shortcut jumps back instead of collapsing.
+        store.keepNotesExpanded = true
+        manager.show(note: note)
+        try await settle()
+        panel.resignKey()
+        try await settle()
+        try require(note.isExpanded && !manager.collapseFocusedNote() && note.isExpanded,
+                    "An unfocused, expanded note collapsed instead of being refocused")
+        try require(manager.showMostRecentNote(), "The unfocused note was not recalled")
+        try await settle()
+        try require(panel.isKeyWindow && note.isExpanded, "The shortcut did not jump back to the unfocused note")
+
+        guard let content = panel.contentView, let editor = descendant(ChatTextView.self, in: content) else {
+            throw CheckFailure(message: "The collapse fixture did not mount its editor")
+        }
+        panel.makeFirstResponder(editor)
+        editor.setMarkedText("composition", selectedRange: NSRange(location: 11, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        _ = manager.collapseFocusedNote()
+        try require(note.isExpanded && editor.hasMarkedText(), "Collapsing by shortcut discarded input-method composition")
+        editor.unmarkText()
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func noteShortcutsPreserveCompositionAndSheets() async throws {
+        let (directory, store, manager) = fixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let note = store.createNote(title: "Protected shortcut \(UUID())", model: "fictional-model", effort: "medium")
+        manager.show(note: note)
+        try await settle()
+        let panel = try fixturePanel(for: note)
+        guard let content = panel.contentView, let editor = descendant(ChatTextView.self, in: content) else {
+            throw CheckFailure(message: "The shortcut composition fixture did not mount its editor")
+        }
+        panel.makeFirstResponder(editor)
+        editor.setMarkedText("composition", selectedRange: NSRange(location: 11, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        try require(editor.hasMarkedText(), "The shortcut fixture did not enter marked-text composition")
+        _ = panel.performKeyEquivalent(with: shortcutEvent(in: panel))
+        try require(!store.keepNotesExpanded && editor.hasMarkedText(), "The toggle interfered with active input-method composition")
+        let focusBefore = note.focusRequest
+        try require(manager.showMostRecentNote(), "Recall did not handle a note with active composition")
+        try require(editor.hasMarkedText() && panel.firstResponder === editor && note.focusRequest == focusBefore,
+                    "Recalling an open note discarded composition or redirected its editor")
+        editor.unmarkText()
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        panel.beginSheet(sheet, completionHandler: { _ in })
+        try await settle()
+        _ = panel.performKeyEquivalent(with: shortcutEvent(in: panel))
+        try require(!store.keepNotesExpanded, "The shortcut toggled a setting behind an attached sheet")
+        try require(manager.showMostRecentNote() && panel.attachedSheet === sheet,
+                    "Recall dismissed or bypassed an attached sheet")
+        panel.endSheet(sheet)
+        sheet.close()
+        store.notes.removeAll()
+        try await settle()
+        await store.shutdown()
+        withExtendedLifetime(manager) {}
+    }
+
+    @MainActor private static func shortcutRecorderCapturesAndCancels() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floating-ai-shortcut-recorder-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        var configurations = 0
+        store.configureKeyboardShortcuts = { _ in configurations += 1 }
+        store.openNoteShortcutActive = true // Visual state only; registration remains faked.
+        let host = NSHostingView(rootView: ShortcutSettingsView(store: store).background(Color(nsColor: .windowBackgroundColor)))
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 448, height: 320),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.contentView = host
+        window.setContentSize(NSSize(width: 448, height: 320))
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await settle()
+        host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+            throw CheckFailure(message: "The shortcut settings preview could not allocate its bitmap")
+        }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw CheckFailure(message: "The shortcut settings preview could not encode PNG")
+        }
+        let preview = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".build/preview-shortcuts.png")
+        try png.write(to: preview, options: .atomic)
+        guard let recorder = descendant(ShortcutRecorderButton.self, in: host) else {
+            throw CheckFailure(message: "The native shortcut recorder did not mount")
+        }
+        recorder.performClick(nil)
+        try require(recorder.isRecording && store.isRecordingShortcut, "Clicking a shortcut did not enter recording mode")
+        NSApp.postEvent(shortcutEvent(in: window, keyCode: 38, flags: [.command, .shift]), atStart: false)
+        NSApp.postEvent(shortcutEvent(in: window, keyCode: 38, flags: [.command, .shift], repeatKey: true), atStart: false)
+        try await settle()
+        try require(recorder.isRecording && store.isRecordingShortcut && configurations == 0 && store.keyboardShortcuts.openNote == .openNote,
+                    "Recording activated a shortcut while its key was still held")
+        NSApp.postEvent(shortcutEvent(in: window, keyCode: 38, flags: [], type: .keyUp), atStart: false)
+        try await settle()
+        let custom = FloatingAICore.KeyboardShortcut(keyCode: 38, modifiers: UInt32(NSEvent.ModifierFlags([.command, .shift]).rawValue))
+        try require(!recorder.isRecording && !store.isRecordingShortcut && store.keyboardShortcuts.openNote == custom && configurations == 1,
+                    "Recording did not capture a real key event and restore normal shortcut handling")
+        recorder.performClick(nil)
+        NSApp.postEvent(shortcutEvent(in: window), atStart: false)
+        NSApp.postEvent(shortcutEvent(in: window, keyCode: 53, flags: []), atStart: false)
+        try await settle()
+        try require(!recorder.isRecording && !store.isRecordingShortcut && store.keyboardShortcuts.openNote == custom && configurations == 1,
+                    "Escape did not cancel recording without changing the shortcut")
+        recorder.performClick(nil)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        try require(!recorder.isRecording && !store.isRecordingShortcut, "Losing Settings focus left shortcut recording active")
+        recorder.performClick(nil)
+        host.removeFromSuperview()
+        window.contentView = nil
+        try await settle()
+        try require(!store.isRecordingShortcut, "Closing the recorder left global shortcuts suspended")
+        await store.shutdown()
+    }
+
+    @MainActor private static func shortcutSettingsRejectConflictsAndPersist() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floating-ai-shortcut-preferences-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = NotePersistence(directory: directory)
+        let store = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        let initial = store.keyboardShortcuts
+        var duplicate = initial
+        duplicate.toggleKeepOpen = duplicate.openNote
+        do {
+            try ShortcutSettingsValidation.validate(duplicate, menu: nil)
+            throw CheckFailure(message: "The two note actions accepted identical shortcuts")
+        } catch is ShortcutSettingsValidation.Failure {}
+        var localDuplicate = initial
+        localDuplicate.deleteNote = localDuplicate.hideNote
+        do {
+            try ShortcutSettingsValidation.validate(localDuplicate, menu: nil)
+            throw CheckFailure(message: "Hide Note and Delete Note accepted identical shortcuts")
+        } catch let failure as ShortcutSettingsValidation.Failure {
+            try require(failure.message.contains("Delete Note and Hide Note"), "The duplicate message did not name both actions")
+        }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Fixture existing action", action: nil, keyEquivalent: "k")
+        item.keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(item)
+        do {
+            try ShortcutSettingsValidation.validate(initial, menu: menu)
+            throw CheckFailure(message: "A shortcut silently replaced an existing application menu action")
+        } catch is ShortcutSettingsValidation.Failure {}
+        try require(store.keyboardShortcuts == initial, "Conflict checks changed saved preferences")
+        let custom = FloatingAICore.KeyboardShortcut(keyCode: 38, modifiers: UInt32(NSEvent.ModifierFlags([.command, .shift]).rawValue))
+        let disabled = KeyboardShortcutSettings(openNote: nil, toggleKeepOpen: custom)
+        try require(store.updateKeyboardShortcuts(disabled), "Custom and disabled shortcuts could not be saved")
+        let restored = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(restored.keyboardShortcuts == disabled, "Restart lost a customized or disabled shortcut")
+        await restored.shutdown()
+        await store.shutdown()
+        let legacy = Data(#"{"version":1,"cliPath":"","defaultModelID":"","defaultEffort":"","notes":[]}"#.utf8)
+        try legacy.write(to: persistence.documentURL, options: .atomic)
+        let migrated = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        try require(migrated.keyboardShortcuts == KeyboardShortcutSettings() && migrated.recentNoteIDs.isEmpty,
+                    "Existing notes did not receive the default shortcuts without a migration")
+        await migrated.shutdown()
+    }
+
+    @MainActor private static func shortcutSaveFailureRollsBackOrDisablesRegistration() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("floating-ai-shortcut-save-failure-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(directory: directory, apiKeyStore: EmptyKeyStore())
+        defer { store.configureKeyboardShortcuts = nil; store.disableGlobalShortcut = nil }
+        let persistence = NotePersistence(directory: directory)
+        let original = store.keyboardShortcuts
+        var replacement = original
+        replacement.openNote = FloatingAICore.KeyboardShortcut(keyCode: 38, modifiers: UInt32(NSEvent.ModifierFlags([.command, .shift]).rawValue))
+        try require(store.persist(), "Could not create the shortcut storage-failure fixture")
+        let savedData = try Data(contentsOf: persistence.documentURL)
+        var attempts: [KeyboardShortcutSettings] = []
+        var disabled = 0
+        store.disableGlobalShortcut = { [weak store] in disabled += 1; store?.openNoteShortcutActive = false }
+        store.configureKeyboardShortcuts = { settings in
+            attempts.append(settings)
+            throw CheckFailure(message: "Synthetic registration failure")
+        }
+        try require(!store.updateKeyboardShortcuts(replacement) && store.keyboardShortcuts == original && disabled == 0,
+                    "Registration failure replaced preferences or disabled the previous shortcut")
+        let afterRegistrationFailure = try Data(contentsOf: persistence.documentURL)
+        try require(afterRegistrationFailure == savedData, "Registration failure wrote new preferences to disk")
+
+        // Block atomic replacement using a directory at the temporary document
+        // path. No chmod, live app data, or system shortcut registration is used.
+        try FileManager.default.removeItem(at: persistence.documentURL)
+        try FileManager.default.createDirectory(at: persistence.documentURL, withIntermediateDirectories: false)
+        attempts.removeAll()
+        store.configureKeyboardShortcuts = { settings in attempts.append(settings) }
+        try require(!store.updateKeyboardShortcuts(replacement), "A failed save reported shortcut configuration success")
+        try require(attempts == [replacement, original] && store.keyboardShortcuts == original && disabled == 0,
+                    "A failed save did not restore the previous shortcut and preferences")
+        try require(store.shortcutError?.contains("previous shortcuts have been kept") == true,
+                    "A rolled-back save failure did not explain that the previous shortcuts were retained")
+
+        attempts.removeAll()
+        store.openNoteShortcutActive = true
+        store.configureKeyboardShortcuts = { settings in
+            attempts.append(settings)
+            if settings == original { throw CheckFailure(message: "Synthetic rollback registration failure") }
+        }
+        try require(!store.updateKeyboardShortcuts(replacement), "A failed shortcut rollback reported success")
+        try require(attempts == [replacement, original] && store.keyboardShortcuts == original && disabled == 1 && !store.openNoteShortcutActive,
+                    "A failed rollback left the unpersisted global shortcut active")
+        try require(store.shortcutError?.contains("Open Recent Note is inactive") == true,
+                    "A failed rollback did not explain the inactive global shortcut")
+
+        try FileManager.default.removeItem(at: persistence.documentURL)
+        try savedData.write(to: persistence.documentURL, options: .atomic)
+        attempts.removeAll()
+        store.configureKeyboardShortcuts = { [weak store] settings in
+            attempts.append(settings)
+            store?.openNoteShortcutActive = settings.openNote != nil
+        }
+        try require(store.updateKeyboardShortcuts(replacement) && store.openNoteShortcutActive && store.shortcutError == nil,
+                    "Explicit retry could not restore a shortcut after storage recovered")
+        let recovered = try persistence.load()
+        try require(recovered.keyboardShortcuts == replacement, "Explicit retry did not save the replacement shortcut")
+        await store.shutdown()
+    }
+
     private static func compactResizeGeometryPreservesAnchors() throws {
         let area = NSRect(x: 0, y: 0, width: 1000, height: 800)
         let frame = NSRect(x: 200, y: 200, width: 220, height: 40)
@@ -803,7 +1234,8 @@ private struct UndoComposer: View {
     }
 
     @MainActor private static func chooseConfirmation(_ choice: String, store: AppStore, note: NoteState,
-                                                      exerciseReturn: Bool = false) async -> ConfirmationDriver {
+                                                      exerciseReturn: Bool = false,
+                                                      trigger: (@MainActor () -> Void)? = nil) async -> ConfirmationDriver {
         await withCheckedContinuation { continuation in
             // Real button actions enter AppKit from its event loop. Invoking a
             // nested modal loop directly inside Swift's async main task can
@@ -811,7 +1243,7 @@ private struct UndoComposer: View {
             DispatchQueue.main.async {
                 let driver = ConfirmationDriver(choice: choice, exerciseReturn: exerciseReturn)
                 driver.start()
-                store.requestDeleteNote(note)
+                if let trigger { trigger() } else { store.requestDeleteNote(note) }
                 driver.stop()
                 continuation.resume(returning: driver)
             }

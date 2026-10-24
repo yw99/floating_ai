@@ -1,6 +1,6 @@
 # 验证记录
 
-验证日期：2026-10-22。开发机器：Intel Mac，macOS 14.6.1，Swift 5.10，Command Line Tools。
+最近验证日期：2026-10-24。开发机器：Intel Mac，macOS 14.6.1，Swift 5.10，Command Line Tools。
 
 ## 已通过
 
@@ -168,6 +168,20 @@
 - **0.3.3（build 20）**的 Intel／Apple Silicon release 构建、universal 合并及打包通过。根目录应用与 ZIP 解包后的版本、两个可执行文件的双架构已核对；Info.plist、两个二进制、33 个数学资源及启动器均一致。ZIP 在 `/private/tmp` 解包后的严格签名、附件读取器签名及启动器执行权限检查通过。Desktop File Provider 仍会重新添加根目录应用的 FinderInfo，导致本轮该位置的严格签名检查失败；签名与归档在 `/private/tmp` 完成并通过验证，ZIP 不受此桌面元数据影响。
 - Apple Silicon 为交叉编译，未在 ARM 实机运行；真实跨应用鼠标、Finder 拖放、输入法与多显示器行为仍属于下方人工验收项目。本次未退出或重启用户正在运行的应用。
 
+## 0.3.4 便签快捷键（build 21）
+
+- 默认 **⌘⌥O** 是全局 Open Recent Note：应用运行时唤回最近主动使用的便签，包括隐藏便签；已有窗口复用并聚焦输入。没有便签时打开现有 New Note 对话框，继续由用户选择标题、模型和 effort。最近使用顺序单独保存，恢复窗口、Show All 和后台回复不会改写该顺序；删除最近便签后回退到剩余便签。若当前有键盘焦点的便签已展开，⌘⌥O 改为收起该便签（与 Esc 相同，保留输入法 marked text）；便签展开但没有焦点（例如开启 Keep Notes Expanded 后切到其他应用）时仍跳回最近便签。状态栏和 File 菜单的 Open Recent Note 始终只打开。
+- 默认 **⌘⌥M**（Hide Note）和 **⌘⌥Delete**（Delete Note）同样只在便签有键盘焦点时生效。⌘⌥M 与标题栏 − 按钮一样隐藏便签并保留内容；⌘⌥Delete 弹出现有删除确认，Cancel 仍为默认按钮。按住不重复执行，可单独禁用或自定义。⌘⌥- 为 macOS 辅助功能缩放的“缩小”快捷键（开启“使用键盘快捷键缩放”时会被系统占用），因此没有用作隐藏。保存配置时缺少的绑定字段采用默认值，显式 null 才表示禁用，早先只保存了 Open／Keep 两项的配置会自动获得新默认快捷键。
+- 默认 **⌘⌥K** 只在便签原生窗口接收键盘输入时切换全局 Keep Notes Expanded 偏好，并短暂显示当前开关状态及辅助功能公告。重复按键不反复切换，Settings／其他应用／模态对话框不触发；保留输入法 marked text。
+- Settings 的 Keyboard Shortcuts 支持录入、禁用和恢复默认值。录入期间暂停已有全局绑定，松开所录入按键后再应用新绑定，Esc、失焦和关闭窗口取消录入。旧便签缺少配置时采用默认快捷键，已禁用的快捷键重新启动后保持禁用。
+- 全局注册检查已启用的 macOS 系统快捷键；设置界面检查重复绑定及本应用菜单冲突。注册失败保留旧绑定，启动时失败可显式 Retry；Open 不可用时仍可修改 Keep。保存失败尝试恢复旧绑定，恢复失败则禁用全局绑定并显示错误，避免界面配置与实际活动绑定不一致。其他应用内部快捷键不能被完整检测，界面和 README 均说明这一限制。
+- `./scripts/test-shortcuts.sh --native-registration` 通过全部 **10 组**隔离检查，覆盖配置序列化、键盘布局标签、匹配与合法性、系统冲突、注册失败、旧事件与重复按键、录入暂停／恢复、独立修改本地快捷键、保存回滚后的配置一致性及同一绑定的显式重试。原生 Carbon 注册／注销检查仅短暂注册 **⌃⌥⇧⌘F20**，没有注入键盘事件或占用默认组合键。
+- `./scripts/test.sh` 通过核心持久化、凭据、历史记录及 Codex／Claude 子进程协议检查。测试使用临时目录、虚构凭据和模拟后端，不读取真实便签或发送模型请求。
+- `./scripts/test-deletion-ui.sh` 通过全部 **30/30** 原生界面检查，保留原有 21 项并新增最近使用顺序／隐藏与删除回退、便签焦点与自定义／禁用／重复按键、⌘⌥M 隐藏与 ⌘⌥Delete 经真实确认框取消／删除、⌘⌥O 仅收起有焦点的展开便签、输入法与 sheet 保护、原生录入的按下／按住／松开／取消、菜单与重复绑定冲突、持久化及旧数据兼容、保存失败与注册回滚失败等验证。
+- 新快捷键设置区域按实际 **448 点**内容宽度渲染并检查；四个录入按钮、禁用／重置按钮和说明均无重叠。录入预览夹具限定尺寸后，通过 `FLOATING_AI_SHORTCUTS_ONLY=1 ./scripts/test-deletion-ui.sh` 再次验证该交互。
+- 加入 ⌘⌥M／⌘⌥Delete 和 ⌘⌥O 收起后，**0.3.4（build 21）**以 `./scripts/build-app.sh universal` 重新完成 Intel／Apple Silicon release 构建、universal 合并及打包。ZIP 在 `/private/tmp` 解包后的应用与附件读取器严格签名通过，两个可执行文件均含双架构；根目录应用与 ZIP 中的主程序均包含新的重复绑定提示。本轮未重复逐文件 SHA-256 核对及打包读取器的真实格式检查。
+- 根目录 `.app` 仍受 Desktop File Provider 自动添加 FinderInfo 的影响，该位置严格签名检查失败；上述 ZIP 的签名检查通过。经用户同意，正常退出旧版应用后重新启动新版：已有的 Open／Keep 配置保留，并自动补入 Hide／Delete 默认快捷键，便签数量不变。Apple Silicon 仅交叉编译，真实跨应用快捷键、不同键盘布局和全屏／多显示器切换仍需人工试用；原生注册检查不等同于这些端到端场景。
+
 ## 真实 Codex 调用
 
 使用已有 ChatGPT 登录和本机 `/Applications/ChatGPT.app/Contents/Resources/codex`，版本 **0.151.0-alpha.7.2**：
@@ -225,6 +239,8 @@ CLI **0.134.0** 的握手与协议检查通过，但其目录中的 GPT-5.5 / GP
 ./scripts/test-multi-provider.sh
 ./scripts/test-model-switch-ui.sh
 ./scripts/test-deletion-ui.sh
+./scripts/test-shortcuts.sh
+./scripts/test-shortcuts.sh --native-registration
 ./scripts/test-manage-notes-ui.sh
 ./scripts/test-files.sh
 ./scripts/test-math-ui.sh

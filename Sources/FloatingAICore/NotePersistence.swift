@@ -116,6 +116,9 @@ public struct AppDocument: Codable, Sendable {
     public var inactiveNoteOpacity: Double?
     /// Missing in older documents preserves automatic collapse on focus loss.
     public var keepNotesExpanded: Bool?
+    /// An absent settings object uses the default bindings; nil bindings disable an action.
+    public var keyboardShortcuts: KeyboardShortcutSettings?
+    public var recentNoteIDs: [UUID]?
     public var notes: [StoredNote] = []
     public init() {}
 
